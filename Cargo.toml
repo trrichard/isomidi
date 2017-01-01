@@ -1,0 +1,13 @@
+[package]
+name = "isomidi"
+version = "0.1.0"
+authors = ["Tyler Richard <trichard@blueorigin.com>"]
+
+[dependencies]
+time = "0.1"
+
+[dependencies.sdl2]
+version = "0.27.1"
+default-features = false
+features = ["gfx"]
+
