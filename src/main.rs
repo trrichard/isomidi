@@ -218,7 +218,9 @@ fn draw_keyboard(renderer:&mut Renderer, font:&Font, colors: &ColorProfile, hexa
             let mut texture = texture.unwrap();
 
             let TextureQuery { width, height, .. } = texture.query();
-            let target = Rect::new(x_offset as i32, y_offset as i32, width, height);
+            let label_x = (x_offset as i32 - width as i32/2) as i32;
+            let label_y = (y_offset as i32 - height as i32/2) as i32;
+            let target = Rect::new(label_x, label_y, width, height);
             try!(renderer.copy(&mut texture, None, Some(target)));
         }
     }
