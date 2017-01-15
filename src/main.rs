@@ -15,8 +15,6 @@ use std::f32::consts::PI;
 use std::path::Path;
 use sdl2::render::Texture;
 use std::collections::HashMap;
-use sdl2::mouse::MouseState;
-use sdl2::mouse::MouseButton;
 
 const INCREMENT_ANGLE:f32 = 2.0*PI/6.0; // 60 degrees in radians
 const MOUSE_OID:i64 = -1;
@@ -62,16 +60,16 @@ fn get_hex_address(xo:f32, yo:f32, hexagon:&HexagonDescription) -> HexAddr {
     let plane1 = yo / hex_height;
     
     let incangle = INCREMENT_ANGLE * -2.0; // -120 degrees
-    let x = xo * incangle.cos() + yo * incangle.sin();
+    //let x = xo * incangle.cos() + yo * incangle.sin();
     let y = xo * incangle.sin() + yo * incangle.cos();
     let plane2 = -y / hex_height; // TODO why did I need to multiply this by two??
     
     let incangle = INCREMENT_ANGLE * -4.0; // -120 degrees
-    let x = xo * incangle.cos() + yo * incangle.sin();
+    //let x = xo * incangle.cos() + yo * incangle.sin();
     let y = xo * incangle.sin() + yo * incangle.cos();
     let plane3 = y / hex_height ;
    
-    let mut cord1 = plane1.floor() as i16;
+    let cord1 = plane1.floor() as i16;
     let mut cord2 = plane2.floor() as i16;
     let mut cord3 = plane3.floor() as i16;
 
@@ -193,11 +191,12 @@ struct HexagonDescription {
     x_vec:[i16;6],
     y_vec:[i16;6],
 }
-
-struct HexKey {
+// TODO use this structure
+/*struct HexKey {
+    key_down_color: Color,
     color: Color,
     texture: Texture,
-}
+}*/
 
 trait Keyboard {
     fn get_key_label(&self, HexAddr, renderer: &mut Renderer) -> Result<Texture, sdl2::render::TextureValueError>; // todo decide on return type.
@@ -220,7 +219,7 @@ fn draw_keyboard(
     for row in 0..rows {
         for col in 0..cols {
             let is_even = row % 2 == 0;
-            let (mut x_offset, mut y_offset) = match is_even {
+            let (mut x_offset, y_offset) = match is_even {
                 true => ((hexagon.width + hexagon.radius) * col, row * hexagon.half_height),
                 false => ((hexagon.width + hexagon.radius) * col + hexagon.radius + hexagon.radius/2, row * hexagon.half_height),
             };
@@ -243,7 +242,7 @@ fn draw_keyboard(
 
             // TODO cache textures for the hex labels
             // if we don't have a keyboard then just print the row and column numbers
-            let mut texture = match keyboard {
+            let texture = match keyboard {
                 Some(keyboard) => keyboard.get_key_label(HexAddr{x:col, y:row}, renderer),
                 None => {
                     // TODO handle this font error
@@ -298,7 +297,7 @@ impl<'a> KeyboardState<'a> {
     fn is_pressed(&self, hexaddr: HexAddr) -> bool {
         // TODO this iteration is SLOW and this function is called once per hexagon
         // TODO make this function FAST!
-        for (oid, value) in &self.active_presses_map {
+        for (_, value) in &self.active_presses_map {
             if hexaddr.x == value.x && hexaddr.y == value.y {
                 return true;
             }
@@ -364,8 +363,8 @@ fn main() {
     
     let mut renderer = window.renderer().build().unwrap();
     
-    let mut font = ttf_context.load_font(font_path, 20).unwrap();
-    let mut keyboard_font = ttf_context.load_font(font_path, 20).unwrap();
+    let font = ttf_context.load_font(font_path, 20).unwrap();
+    let keyboard_font = ttf_context.load_font(font_path, 20).unwrap();
     //keyboard_font.set_style(sdl2::ttf::STYLE_BOLD);
 
     // Draw a black screen
@@ -428,11 +427,11 @@ fn main() {
                     keyboard_state.on_press(finger_id, x as f32, y as f32);
                     trigger_draw = true;
                 },
-                Event::FingerMotion {x, y, finger_id, touch_id,..} => {
+                Event::FingerMotion {x, y, finger_id, ..} => {
                     keyboard_state.on_move(finger_id, x as f32, y as f32);
                     trigger_draw = true;
                 },
-                Event::FingerUp {x, y, finger_id, touch_id,..} => {
+                Event::FingerUp {finger_id, ..} => {
                     keyboard_state.on_release(finger_id);
                     trigger_draw = true;
                 },
