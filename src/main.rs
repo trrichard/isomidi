@@ -14,8 +14,12 @@ use std::f32;
 use std::f32::consts::PI;
 use std::path::Path;
 use sdl2::render::Texture;
+use std::collections::HashMap;
+use sdl2::mouse::MouseState;
+use sdl2::mouse::MouseButton;
 
 const INCREMENT_ANGLE:f32 = 2.0*PI/6.0; // 60 degrees in radians
+const MOUSE_OID:i64 = -1;
 
 fn get_hexagon(x:i16, y:i16, radius:i16) -> ([i16;6], [i16;6]) {
     // TODO this function needs to be broken up into a calculate and translate section, we don't
@@ -45,36 +49,6 @@ fn translate_hexagon(xlist:[i16;6], ylist:[i16;6], x:i16, y:i16) -> ([i16;6], [i
     return (xs, ys)
 }
 
-// handle the annoying Rect i32
-macro_rules! rect(
-    ($x:expr, $y:expr, $w:expr, $h:expr) => (
-        Rect::new($x as i32, $y as i32, $w as u32, $h as u32)
-    )
-);
-
-// Scale fonts to a reasonable size when they're too big (though they might look less smooth)
-fn get_centered_rect(rect_width: u32, rect_height: u32, cons_width: u32, cons_height: u32) -> Rect {
-    let wr = rect_width as f32 / cons_width as f32;
-    let hr = rect_height as f32 / cons_height as f32;
-
-    let (w, h) = if wr > 1f32 || hr > 1f32 {
-        if wr > hr {
-            println!("Scaling down! The text will look worse!");
-            let h = (rect_height as f32 / wr) as i32;
-            (cons_width as i32, h)
-        } else {
-            println!("Scaling down! The text will look worse!");
-            let w = (rect_width as f32 / hr) as i32;
-            (w, cons_height as i32)
-        }
-    } else {
-        (rect_width as i32, rect_height as i32)
-    };
-
-    let cx = (800 as i32 - w) / 2;
-    let cy = (600 as i32 - h) / 2;
-    rect!(cx, cy, w, h)
-}
 
 /// Given the x and y locations of a click, return the address of the hexagon
 /// The logic I'm doing in here is a little crazy. 
@@ -82,7 +56,7 @@ fn get_centered_rect(rect_width: u32, rect_height: u32, cons_width: u32, cons_he
 /// hexagons from a the starting point
 /// This effectivly tesalates the hexagons into 6 triangles, this algorithm gets the location of
 /// the triangle clicked, then figures out which hexagon that triangle belongs in.
-fn get_hex_address(xo:f32, yo:f32, hexagon:&HexagonDescription) -> (i16, i16) {
+fn get_hex_address(xo:f32, yo:f32, hexagon:&HexagonDescription) -> HexAddr {
     let hex_height = hexagon.half_height as f32;
     
     let plane1 = yo / hex_height;
@@ -136,7 +110,7 @@ fn get_hex_address(xo:f32, yo:f32, hexagon:&HexagonDescription) -> (i16, i16) {
         }
     }
     //println!("x:{}, y:{}", x, y);
-    (x, y)
+    HexAddr{x:x, y:y}
 }
 
 
@@ -149,13 +123,31 @@ struct JammerKeyboard<'a> {
 }
 
 impl<'a> Keyboard for JammerKeyboard<'a> {
+    fn get_key_color(&self, addr: HexAddr) -> Color {
+        let note = self.get_note(addr);
+        match note == "C" {
+            true => self.colors.b,
+            false => {
+                match note.contains("#") {
+                    true => self.colors.c,
+                    false => self.colors.d,
+                }
+            }
+        }
+    }
     fn get_key_label(&self, addr: HexAddr, renderer: &mut Renderer) -> Result<Texture, sdl2::render::TextureValueError> {
         let note = self.get_note(addr);
         let surface = self.font.render(note).blended(self.colors.line_color).unwrap();
         renderer.create_texture_from_surface(&surface)
     }
-    fn key_pressed(&self, addr: HexAddr) {
+    fn on_key_press(&self, addr: HexAddr) {
+        let note = self.get_note(addr);
+        println!("Note Down: {}", note);
         // noop
+    }
+    fn on_key_release(&self, addr: HexAddr) {
+        let note = self.get_note(addr);
+        println!("Note Up: {}", note);
     }
 }
 
@@ -172,15 +164,42 @@ impl<'a> JammerKeyboard<'a> {
         
     }
 }
-#[derive(Debug)]
+
+#[derive(Debug,PartialEq,Eq,Copy,Clone)]
 struct HexAddr {
     x : i16,
     y : i16,
 }
 
+struct ColorProfile {
+    line_color: Color,
+    b: Color,
+    c: Color,
+    d: Color,
+    e: Color,
+    f: Color,
+}
+
+#[derive(Debug)]
+struct HexagonDescription {
+    width:i16,
+    height:i16,
+    half_height:i16,
+    radius:i16,
+    x_vec:[i16;6],
+    y_vec:[i16;6],
+}
+
+struct HexKey {
+    color: Color,
+    texture: Texture,
+}
+
 trait Keyboard {
     fn get_key_label(&self, HexAddr, renderer: &mut Renderer) -> Result<Texture, sdl2::render::TextureValueError>; // todo decide on return type.
-    fn key_pressed(&self, HexAddr);
+    fn on_key_press(&self, HexAddr);
+    fn on_key_release(&self, HexAddr);
+    fn get_key_color(&self, addr: HexAddr) -> Color;
 }
 
 
@@ -197,10 +216,17 @@ fn draw_keyboard(renderer:&mut Renderer, font:&Font, colors: &ColorProfile, hexa
             };
             x_offset -= hexagon.width/2;
             let (xs, ys) = translate_hexagon(hexagon.x_vec, hexagon.y_vec, x_offset, y_offset);
-            match is_even {
-                true => try!(renderer.filled_polygon(&xs, &ys, colors.d)),
-                false => try!(renderer.filled_polygon(&xs, &ys, colors.e)),
+            let polygon_color = match keyboard {
+                Some(keyboard) => keyboard.get_key_color(HexAddr{x:col, y:row}),
+                None => {
+                    match is_even {
+                        true => colors.d,
+                        false => colors.e,
+                    }
+                }
             };
+
+            try!(renderer.filled_polygon(&xs, &ys, polygon_color));
             //println!("{}x{} {:?} {:?}", row, col, xs.to_vec(), ys);
             try!(renderer.polygon(&xs, &ys, colors.line_color));
 
@@ -227,25 +253,37 @@ fn draw_keyboard(renderer:&mut Renderer, font:&Font, colors: &ColorProfile, hexa
     Ok(())
 }
 
-
-
-struct ColorProfile {
-    line_color: Color,
-    b: Color,
-    c: Color,
-    d: Color,
-    e: Color,
-    f: Color,
+struct KeyboardState<'a> {
+    active_presses_map : HashMap<i64, HexAddr>,
+    hexagon: &'a HexagonDescription,
+    keyboard: &'a Keyboard,
 }
 
-#[derive(Debug)]
-struct HexagonDescription {
-    width:i16,
-    height:i16,
-    half_height:i16,
-    radius:i16,
-    x_vec:[i16;6],
-    y_vec:[i16;6],
+impl<'a> KeyboardState<'a> {
+    fn on_press(&mut self, oid: i64, x:f32, y:f32) {
+        let addr = get_hex_address(x, y, self.hexagon);
+        self.active_presses_map.insert(oid, addr);
+        self.keyboard.on_key_press(addr);
+    }
+    fn on_release(&mut self, oid: i64) {
+        match self.active_presses_map.remove(&oid) {
+            Some(addr) => self.keyboard.on_key_release(addr),
+            None => (),
+        }
+    }
+    fn on_move(&mut self, oid: i64, x:f32, y:f32) {
+        let addr = get_hex_address(x, y, self.hexagon);
+        match self.active_presses_map.get(&oid) {
+            None => self.keyboard.on_key_press(addr),
+            Some(old_addr) => {
+                if addr.x != old_addr.x || addr.y != old_addr.y { // TODO replace with == and get == to work!
+                    self.keyboard.on_key_press(addr);
+                    self.keyboard.on_key_release(*old_addr);
+                }
+            }
+        };
+        self.active_presses_map.insert(oid, addr);
+    }
 }
 
 fn main() {
@@ -263,7 +301,7 @@ fn main() {
         f : Color::RGB(0x39,0x2F,0x5A),
     };
 
-    let radius = 75;
+    let radius = 60;
     let buffer_hack = 0;
 
     let font_path = Path::new("/home/trichard/Documents/Software/Blue/personal/isomidi/FantasqueSansMono-Regular.ttf");
@@ -320,18 +358,30 @@ fn main() {
     //// Load the keyboard
     /////////////////////////
     let keyboard = JammerKeyboard { font: keyboard_font, colors: &colors };
+    
 
+    let mut keyboard_state = KeyboardState { 
+        hexagon: &hexagon, 
+        keyboard: &keyboard, 
+        active_presses_map: HashMap::new() 
+    };
 
     /////////////////////////
     //// Main loop
     /////////////////////////
     let mut frame_count = 0;
     let mut last_time = Instant::now();
+    let mut first_run = true;
     'running: loop {
         // TODO sleep till next event?
         let sleep_time = Duration::from_millis(10);
         thread::sleep(sleep_time);
 
+        // TODO: How are we going to do multi finger tracking and mouse tracking?
+        // list of active fingerids / mouse id plus the current hex addr.
+        // on hex addr change fire on_key_press
+        let mut trigger_draw = false;
+        if first_run { trigger_draw = true; }
         for event in event_pump.poll_iter() {
             match event {
                 Event::Quit {..} | Event::KeyDown { keycode: Some(Keycode::Escape), .. } => {
@@ -339,27 +389,47 @@ fn main() {
                     break 'running
                 },
                 Event::MouseButtonDown {x, y, ..} => {
-                    get_hex_address(x as f32, y as f32, &hexagon);
-                    println!("Mouse Down {} {}", x, y);
+                    keyboard_state.on_press(MOUSE_OID, x as f32, y as f32);
+                    trigger_draw = true;
                 },
-                Event::FingerDown {x, y, ..} => {
-                    get_hex_address(x as f32, y as f32, &hexagon);
-                    println!("Finger Down {} {}", x, y);
+                Event::MouseButtonUp {..} => {
+                    keyboard_state.on_release(MOUSE_OID);
+                    trigger_draw = true;
+                },
+                Event::MouseMotion {x, y, mousestate, ..} => {
+                    // track only if left mouse button is down
+                    if mousestate.left() {
+                        keyboard_state.on_move(MOUSE_OID, x as f32, y as f32);
+                        trigger_draw = true;
+                    }
+                },
+                Event::FingerDown {x, y, finger_id, ..} => {
+                    keyboard_state.on_press(finger_id, x as f32, y as f32);
+                    trigger_draw = true;
+                },
+                Event::FingerMotion {x, y, finger_id, touch_id,..} => {
+                    keyboard_state.on_move(finger_id, x as f32, y as f32);
+                    trigger_draw = true;
+                },
+                Event::FingerUp {x, y, finger_id, touch_id,..} => {
+                    keyboard_state.on_release(finger_id);
+                    trigger_draw = true;
                 },
                 _ => {}
             }
         }
-
-        renderer.set_draw_color(colors.line_color);
-        renderer.clear();
-        draw_keyboard(&mut renderer, &font, &colors, &hexagon, Some(&keyboard));
+        if trigger_draw {
+            renderer.set_draw_color(colors.line_color);
+            renderer.clear();
+            draw_keyboard(&mut renderer, &font, &colors, &hexagon, Some(&keyboard));
+        }
 
         renderer.present();
 
         // TODO render a stats section in app
         frame_count += 1;
         if last_time.elapsed() > Duration::from_secs(1) {
-            //println!("fps {}", frame_count);
+            println!("fps {}", frame_count);
             frame_count = 0;
             last_time = Instant::now();
         }
