@@ -19,8 +19,8 @@ pub struct HexKey {
 }
 
 pub trait Keyboard {
-    fn on_key_press(&self, HexAddr);
-    fn on_key_release(&self, HexAddr);
+    fn on_key_press(&mut self, HexAddr);
+    fn on_key_release(&mut self, HexAddr);
     fn get_key_info(&self, addr: HexAddr, renderer: &mut Renderer) -> Result<HexKey, &'static str>;
 }
 

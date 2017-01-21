@@ -1,4 +1,5 @@
 extern crate sdl2;
+extern crate midir;
 mod keyboard;
 
 use sdl2::rect::Rect;
@@ -19,6 +20,7 @@ use std::collections::HashMap;
 use keyboard::Keyboard;
 use keyboard::HexAddr;
 use keyboard::HexKey;
+use midir::{MidiOutput, Ignore, MidiOutputConnection};
 
 const INCREMENT_ANGLE:f32 = 2.0*PI/6.0; // 60 degrees in radians
 const MOUSE_OID:i64 = -1;
@@ -122,22 +124,28 @@ fn get_hex_address(xo:f32, yo:f32, hexagon:&HexagonDescription) -> HexAddr {
 struct JammerKeyboard<'a> {
     font : Font<'a>,
     colors: &'a ColorProfile,
+    connection_out: MidiOutputConnection,
 }
 
 impl<'a> Keyboard for JammerKeyboard<'a> {
-    fn on_key_press(&self, addr: HexAddr) {
-        let note = self.get_note(addr);
-        println!("Note Down: {}", note);
-        // noop
+    fn on_key_press(&mut self, addr: HexAddr) {
+        let (note, note_num) = {
+            self.get_note(addr)
+        };
+        self.connection_out.send(&[144, note_num, 70]);
+        println!("Note Down: {:?}", note);
     }
-    fn on_key_release(&self, addr: HexAddr) {
-        let note = self.get_note(addr);
+    fn on_key_release(&mut self, addr: HexAddr) {
+        let (note, note_num) = {
+            self.get_note(addr)
+        };
+        self.connection_out.send(&[144, note_num, 0]);
         println!("Note Up: {}", note);
     }
     fn get_key_info(&self, addr: HexAddr, renderer: &mut Renderer) -> Result<HexKey, &'static str> {
-        let note = self.get_note(addr);
+        let (note,_) = self.get_note(addr);
         // TODO handle these unwraps
-        let surface = self.font.render(note).blended(self.colors.line_color).unwrap();
+        let surface = self.font.render(note.as_str()).blended(self.colors.line_color).unwrap();
         let texture = renderer.create_texture_from_surface(&surface).unwrap();
 
         let color = match note == "C" {
@@ -158,14 +166,17 @@ impl<'a> Keyboard for JammerKeyboard<'a> {
 }
 
 impl<'a> JammerKeyboard<'a> {
-    fn get_note(&self, addr: HexAddr) -> &str {
-        let bottom_row = [ "Bb", "C", "D", "E", "F#", "G#" ];
-        let top_row = [ "F", "G", "A", "B", "C#", "D#" ];
+    fn get_note(&self, addr: HexAddr) -> (String,u8) {
+        let bottom_row =     [ "Bb", "C", "D", "E", "F#", "G#" ];
+        let bottom_row_num =     [ 0, 2, 4, 6, 8, 10 ];
+        let top_row =     [ "F", "G", "A", "B", "C#", "D#" ];
+        let top_row_num =     [ 7, 9, 11, 1, 3, 5 ];
         let x = (addr.x % 6) as usize;
+        let octave = 144 - (addr.y/2 * 12 + 10) as u8;
         if addr.y % 2 == 0 {
-            bottom_row[x]
+            (bottom_row[x].to_string(), octave + bottom_row_num[x]+12)
         }else{
-            top_row[x]
+            (top_row[x].to_string(), octave + top_row_num[x])
         }
         
     }
@@ -197,11 +208,10 @@ fn draw_keyboard(
         colors: &ColorProfile, 
         hexagon: &HexagonDescription, 
         keyboard: &Keyboard,
-        keyboard_state: &KeyboardState) -> Result<(),String> {
+        pressed_keys: Vec<HexAddr>) -> Result<(),String> {
     // TODO math for the number of cols and rows based on window size.
     let rows = 20;
     let cols = 10;
-    let pressed_keys = keyboard_state.get_pressed();
 
     for row in 0..rows {
         for col in 0..cols {
@@ -242,29 +252,28 @@ fn draw_keyboard(
 struct KeyboardState<'a> {
     active_presses_map : HashMap<i64, HexAddr>,
     hexagon: &'a HexagonDescription,
-    keyboard: &'a Keyboard,
 }
 
 impl<'a> KeyboardState<'a> {
-    fn on_press(&mut self, oid: i64, x:f32, y:f32) {
+   fn on_press(&mut self, oid: i64, x:f32, y:f32, keyboard: &mut Keyboard) {
         let addr = get_hex_address(x, y, self.hexagon);
         self.active_presses_map.insert(oid, addr);
-        self.keyboard.on_key_press(addr);
+        keyboard.on_key_press(addr);
     }
-    fn on_release(&mut self, oid: i64) {
+    fn on_release(&mut self, oid: i64, keyboard: &mut Keyboard) {
         match self.active_presses_map.remove(&oid) {
-            Some(addr) => self.keyboard.on_key_release(addr),
+            Some(addr) => keyboard.on_key_release(addr),
             None => (),
         }
     }
-    fn on_move(&mut self, oid: i64, x:f32, y:f32) {
+    fn on_move(&mut self, oid: i64, x:f32, y:f32, keyboard: &mut Keyboard) {
         let addr = get_hex_address(x, y, self.hexagon);
         match self.active_presses_map.get(&oid) {
-            None => self.keyboard.on_key_press(addr),
+            None => keyboard.on_key_press(addr),
             Some(&old_addr) => {
                 if addr != old_addr { 
-                    self.keyboard.on_key_press(addr);
-                    self.keyboard.on_key_release(old_addr);
+                    keyboard.on_key_press(addr);
+                    keyboard.on_key_release(old_addr);
                 }
             }
         };
@@ -352,15 +361,17 @@ fn main() {
     /////////////////////////
     //// Load the keyboard
     /////////////////////////
-    let keyboard = JammerKeyboard { 
+    let midi_out = MidiOutput::new("ISOMIDI").unwrap();
+    let mut connection_out = midi_out.connect(0, "Renoise Midi Input").map_err(|e| e.kind()).unwrap();
+    let mut keyboard = JammerKeyboard { 
         font: keyboard_font, 
         colors: &colors,
+        connection_out : connection_out,
     };
     
 
     let mut keyboard_state = KeyboardState { 
         hexagon: &hexagon, 
-        keyboard: &keyboard, 
         active_presses_map: HashMap::new() 
     };
 
@@ -387,30 +398,30 @@ fn main() {
                     break 'running
                 },
                 Event::MouseButtonDown {x, y, ..} => {
-                    keyboard_state.on_press(MOUSE_OID, x as f32, y as f32);
+                    keyboard_state.on_press(MOUSE_OID, x as f32, y as f32, &mut keyboard);
                     trigger_draw = true;
                 },
                 Event::MouseButtonUp {..} => {
-                    keyboard_state.on_release(MOUSE_OID);
+                    keyboard_state.on_release(MOUSE_OID, &mut keyboard);
                     trigger_draw = true;
                 },
                 Event::MouseMotion {x, y, mousestate, ..} => {
                     // track only if left mouse button is down
                     if mousestate.left() {
-                        keyboard_state.on_move(MOUSE_OID, x as f32, y as f32);
+                        keyboard_state.on_move(MOUSE_OID, x as f32, y as f32, &mut keyboard);
                         trigger_draw = true;
                     }
                 },
                 Event::FingerDown {x, y, finger_id, ..} => {
-                    keyboard_state.on_press(finger_id, x as f32, y as f32);
+                    keyboard_state.on_press(finger_id, x as f32, y as f32, &mut keyboard);
                     trigger_draw = true;
                 },
                 Event::FingerMotion {x, y, finger_id, ..} => {
-                    keyboard_state.on_move(finger_id, x as f32, y as f32);
+                    keyboard_state.on_move(finger_id, x as f32, y as f32, &mut keyboard);
                     trigger_draw = true;
                 },
                 Event::FingerUp {finger_id, ..} => {
-                    keyboard_state.on_release(finger_id);
+                    keyboard_state.on_release(finger_id, &mut keyboard);
                     trigger_draw = true;
                 },
                 _ => {}
@@ -419,7 +430,7 @@ fn main() {
         if trigger_draw {
             renderer.set_draw_color(colors.line_color);
             renderer.clear();
-            draw_keyboard(&mut renderer, &font, &colors, &hexagon, &keyboard, &keyboard_state);
+            draw_keyboard(&mut renderer, &font, &colors, &hexagon, &keyboard, keyboard_state.get_pressed());
         }
 
         renderer.present();
