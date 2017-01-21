@@ -133,7 +133,7 @@ impl<'a> Keyboard for JammerKeyboard<'a> {
             self.get_note(addr)
         };
         self.connection_out.send(&[144, note_num, 70]);
-        println!("Note Down: {:?}", note);
+        println!("Note Down: {:?} -> {}", note, note_num);
     }
     fn on_key_release(&mut self, addr: HexAddr) {
         let (note, note_num) = {
@@ -151,7 +151,7 @@ impl<'a> Keyboard for JammerKeyboard<'a> {
         let color = match note == "C" {
             true => self.colors.b,
             false => {
-                match note.contains("#") {
+                match note.contains("#") || note.contains("b") {
                     true => self.colors.c,
                     false => self.colors.d,
                 }
@@ -169,10 +169,13 @@ impl<'a> JammerKeyboard<'a> {
     fn get_note(&self, addr: HexAddr) -> (String,u8) {
         let bottom_row =     [ "Bb", "C", "D", "E", "F#", "G#" ];
         let bottom_row_num =     [ 0, 2, 4, 6, 8, 10 ];
-        let top_row =     [ "F", "G", "A", "B", "C#", "D#" ];
-        let top_row_num =     [ 7, 9, 11, 1, 3, 5 ];
+        let top_row =     [ "F", "G", "A", "B", "C#", "Eb" ];
+        let top_row_num =     [ 7, 9, 11, 12+1, 12+3, 12+5 ];
         let x = (addr.x % 6) as usize;
-        let octave = 144 - (addr.y/2 * 12 + 10) as u8;
+        let keyset = addr.x/6;
+        //println!("keyset {:?}, {}", addr, keyset);
+        // TODO remove the + 12 for this  and make some keys "invalid"
+        let octave = 144 - (12 + addr.y/2 * 12 + 10 - keyset*12) as u8;
         if addr.y % 2 == 0 {
             (bottom_row[x].to_string(), octave + bottom_row_num[x]+12)
         }else{
@@ -305,12 +308,11 @@ fn main() {
         f : Color::RGB(0x39,0x2F,0x5A),
     };
 
-    let radius = 60;
-    let buffer_hack = 0;
+    let radius = 75;
 
     let font_path = Path::new("/home/trichard/Documents/Software/Blue/personal/isomidi/FantasqueSansMono-Regular.ttf");
     let screen_height = 1200;
-    let screen_width = 1200;
+    let screen_width = 1800;
 
 
     /////////////////////////
@@ -321,7 +323,7 @@ fn main() {
     let (hexagon_x, hexagon_y) = get_hexagon(0,0,radius);
     let half_height = ((INCREMENT_ANGLE).sin() * radius as f32).round() as i16;
     let hexagon = HexagonDescription {
-        width : (radius * 2 + buffer_hack) as i16,
+        width : (radius * 2 ) as i16,
         half_height: half_height,
         height :  half_height * 2,
         radius: radius,
