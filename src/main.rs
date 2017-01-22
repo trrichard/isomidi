@@ -235,7 +235,7 @@ impl<'a> HarmonicKeyboard<'a> {
             return (" ".to_string(), 0);
         }
         let note_label = note_num % 12;
-        return (format!("{}:{},{}", notes[note_label as usize], addr.x, addr.y), note_num as u8)
+        return (format!("{}", notes[note_label as usize]), note_num as u8)
     }
 }
 
