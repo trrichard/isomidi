@@ -181,7 +181,61 @@ impl<'a> JammerKeyboard<'a> {
         }else{
             (top_row[x].to_string(), octave + top_row_num[x])
         }
-        
+    }
+}
+struct HarmonicKeyboard<'a> {
+    font : Font<'a>,
+    colors: &'a ColorProfile,
+    connection_out: MidiOutputConnection,
+}
+
+impl<'a> Keyboard for HarmonicKeyboard<'a> {
+    fn on_key_press(&mut self, addr: HexAddr) {
+        let (note, note_num) = {
+            self.get_note(addr)
+        };
+        self.connection_out.send(&[144, note_num, 70]);
+        println!("Note Down: {:?} -> {}", note, note_num);
+    }
+    fn on_key_release(&mut self, addr: HexAddr) {
+        let (note, note_num) = {
+            self.get_note(addr)
+        };
+        self.connection_out.send(&[144, note_num, 0]);
+        println!("Note Up: {}", note);
+    }
+    fn get_key_info(&self, addr: HexAddr, renderer: &mut Renderer) -> Result<HexKey, &'static str> {
+        let (note,_) = self.get_note(addr);
+        // TODO handle these unwraps
+        let surface = self.font.render(note.as_str()).blended(self.colors.line_color).unwrap();
+        let texture = renderer.create_texture_from_surface(&surface).unwrap();
+
+        let color = match note == "C" {
+            true => self.colors.b,
+            false => {
+                match note.contains("#") || note.contains("b") {
+                    true => self.colors.c,
+                    false => self.colors.d,
+                }
+            }
+        };
+        Ok(HexKey {
+            pressed_color: self.colors.f,
+            color: color,
+            label: texture, 
+        })
+    }
+}
+
+impl<'a> HarmonicKeyboard<'a> {
+    fn get_note(&self, addr: HexAddr) -> (String,u8) {
+        let notes = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "G#", "A", "Bb", "B" ];
+        let note_num = 120 + addr.x - 3 * addr.y - addr.y/2;
+        if note_num < 0 {
+            return (" ".to_string(), 0);
+        }
+        let note_label = note_num % 12;
+        return (format!("{}:{},{}", notes[note_label as usize], addr.x, addr.y), note_num as u8)
     }
 }
 
@@ -365,7 +419,7 @@ fn main() {
     /////////////////////////
     let midi_out = MidiOutput::new("ISOMIDI").unwrap();
     let mut connection_out = midi_out.connect(0, "Renoise Midi Input").map_err(|e| e.kind()).unwrap();
-    let mut keyboard = JammerKeyboard { 
+    let mut keyboard = HarmonicKeyboard { 
         font: keyboard_font, 
         colors: &colors,
         connection_out : connection_out,
