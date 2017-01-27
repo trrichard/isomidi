@@ -21,6 +21,9 @@ use keyboard::Keyboard;
 use keyboard::HexAddr;
 use keyboard::HexKey;
 use midir::{MidiOutput, Ignore, MidiOutputConnection};
+use std::io::{stdin, stdout, Write};
+use std::error::Error;
+use sdl2::rwops::RWops;
 
 const INCREMENT_ANGLE:f32 = 2.0*PI/6.0; // 60 degrees in radians
 const MOUSE_OID:i64 = -1;
@@ -261,7 +264,6 @@ struct HexagonDescription {
 
 fn draw_keyboard(
         renderer:&mut Renderer, 
-        font:&Font, 
         colors: &ColorProfile, 
         hexagon: &HexagonDescription, 
         keyboard: &Keyboard,
@@ -347,6 +349,31 @@ impl<'a> KeyboardState<'a> {
     }
 }
 
+fn get_midi_connection() -> Result<MidiOutputConnection,Box<Error>> {
+    // TODO improve midi selection criteria, maybe pick off of command line.
+    let midi_out = try!(MidiOutput::new("Isomidi"));
+    let out_port: u32 = match midi_out.port_count() {
+        0 => return Err("no output port found".into()),
+        1 => {
+            println!("Choosing the only available output port: {}", midi_out.port_name(0).unwrap());
+            0
+        },
+        _ => {
+            println!("\nAvailable output ports:");
+            for i in 0..midi_out.port_count() {
+                println!("{}: {}", i, midi_out.port_name(i).unwrap());
+            }
+            print!("Please select output port: ");
+            try!(stdout().flush());
+            let mut input = String::new();
+            try!(stdin().read_line(&mut input));
+            try!(input.trim().parse())
+        }
+    };
+    println!("\nOpening connection");
+    Ok(try!(midi_out.connect(out_port, "midir-test").map_err(|e| e.kind())))
+}
+
 fn main() {
     /////////////////////////
     ///// CONSTANTS
@@ -367,6 +394,9 @@ fn main() {
     let font_path = Path::new("/home/trichard/Documents/Software/Blue/personal/isomidi/FantasqueSansMono-Regular.ttf");
     let screen_height = 1200;
     let screen_width = 1800;
+    let TTF_FONT_BYTES = include_bytes!("FantasqueSansMono-Regular.ttf");
+    
+    let mut connection_out = get_midi_connection().unwrap();
 
 
     /////////////////////////
@@ -395,7 +425,7 @@ fn main() {
     video_subsystem.gl_attr().set_multisample_samples(8);
     let ttf_context = sdl2::ttf::init().unwrap();
 
-    let window = video_subsystem.window("rust-sdl2 demo: Video", screen_width, screen_height)
+    let window = video_subsystem.window("Isomidi", screen_width, screen_height)
         .position_centered()
         .opengl()
         .build()
@@ -403,8 +433,8 @@ fn main() {
     
     let mut renderer = window.renderer().build().unwrap();
     
-    let font = ttf_context.load_font(font_path, 20).unwrap();
-    let keyboard_font = ttf_context.load_font(font_path, 20).unwrap();
+    let font_rwop = RWops::from_bytes(TTF_FONT_BYTES).unwrap();
+    let keyboard_font = ttf_context.load_font_from_rwops(font_rwop, 20).unwrap();
     //keyboard_font.set_style(sdl2::ttf::STYLE_BOLD);
 
     // Draw a black screen
@@ -417,8 +447,6 @@ fn main() {
     /////////////////////////
     //// Load the keyboard
     /////////////////////////
-    let midi_out = MidiOutput::new("ISOMIDI").unwrap();
-    let mut connection_out = midi_out.connect(0, "Renoise Midi Input").map_err(|e| e.kind()).unwrap();
     let mut keyboard = HarmonicKeyboard { 
         font: keyboard_font, 
         colors: &colors,
@@ -486,7 +514,7 @@ fn main() {
         if trigger_draw {
             renderer.set_draw_color(colors.line_color);
             renderer.clear();
-            draw_keyboard(&mut renderer, &font, &colors, &hexagon, &keyboard, keyboard_state.get_pressed());
+            draw_keyboard(&mut renderer, &colors, &hexagon, &keyboard, keyboard_state.get_pressed());
         }
 
         renderer.present();
