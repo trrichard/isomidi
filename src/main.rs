@@ -27,6 +27,8 @@ use sdl2::rwops::RWops;
 
 const INCREMENT_ANGLE:f32 = 2.0*PI/6.0; // 60 degrees in radians
 const MOUSE_OID:i64 = -1;
+const NOTE_ON_MSG: u8 = 0x90;
+const NOTE_OFF_MSG: u8 = 0x80;
 
 fn get_hexagon(x:i16, y:i16, radius:i16) -> ([i16;6], [i16;6]) {
     // TODO this function needs to be broken up into a calculate and translate section, we don't
@@ -124,51 +126,21 @@ fn get_hex_address(xo:f32, yo:f32, hexagon:&HexagonDescription) -> HexAddr {
 /// A Keyboard is responsible for labeling it's keys and knowing what to do when a given key is
 /// pressed.
 /// Keyboards must map from a given hexagon address to an action
-struct JammerKeyboard<'a> {
-    font : Font<'a>,
-    colors: &'a ColorProfile,
-    connection_out: MidiOutputConnection,
+struct JammerKeyboard {
+    colors: ColorProfile,
 }
 
-impl<'a> Keyboard for JammerKeyboard<'a> {
-    fn on_key_press(&mut self, addr: HexAddr) {
-        let (note, note_num) = {
-            self.get_note(addr)
-        };
-        self.connection_out.send(&[144, note_num, 70]);
-        println!("Note Down: {:?} -> {}", note, note_num);
-    }
-    fn on_key_release(&mut self, addr: HexAddr) {
-        let (note, note_num) = {
-            self.get_note(addr)
-        };
-        self.connection_out.send(&[144, note_num, 0]);
-        println!("Note Up: {}", note);
-    }
-    fn get_key_info(&self, addr: HexAddr, renderer: &mut Renderer) -> Result<HexKey, &'static str> {
-        let (note,_) = self.get_note(addr);
-        // TODO handle these unwraps
-        let surface = self.font.render(note.as_str()).blended(self.colors.line_color).unwrap();
-        let texture = renderer.create_texture_from_surface(&surface).unwrap();
-
-        let color = match note == "C" {
-            true => self.colors.b,
-            false => {
-                match note.contains("#") || note.contains("b") {
-                    true => self.colors.c,
-                    false => self.colors.d,
-                }
-            }
-        };
-        Ok(HexKey {
-            pressed_color: self.colors.f,
-            color: color,
-            label: texture, 
-        })
+impl Keyboard for JammerKeyboard {
+    fn get_key_info(&self, addr: HexAddr) -> HexKey {
+        let (note,note_num) = self.get_note(addr);
+        HexKey {
+            label: note, 
+            note: note_num,
+        }
     }
 }
 
-impl<'a> JammerKeyboard<'a> {
+impl JammerKeyboard {
     fn get_note(&self, addr: HexAddr) -> (String,u8) {
         let bottom_row =     [ "Bb", "C", "D", "E", "F#", "G#" ];
         let bottom_row_num =     [ 0, 2, 4, 6, 8, 10 ];
@@ -187,46 +159,28 @@ impl<'a> JammerKeyboard<'a> {
     }
 }
 struct HarmonicKeyboard<'a> {
-    font : Font<'a>,
     colors: &'a ColorProfile,
-    connection_out: MidiOutputConnection,
+}
+
+fn note_to_color(note: &String, colors: &ColorProfile) -> Color {
+     match note == "C" {
+        true => colors.b,
+        false => {
+            match note.contains("#") || note.contains("b") {
+                true => colors.c,
+                false => colors.d,
+            }
+        }
+    }
 }
 
 impl<'a> Keyboard for HarmonicKeyboard<'a> {
-    fn on_key_press(&mut self, addr: HexAddr) {
-        let (note, note_num) = {
-            self.get_note(addr)
-        };
-        self.connection_out.send(&[144, note_num, 70]);
-        println!("Note Down: {:?} -> {}", note, note_num);
-    }
-    fn on_key_release(&mut self, addr: HexAddr) {
-        let (note, note_num) = {
-            self.get_note(addr)
-        };
-        self.connection_out.send(&[144, note_num, 0]);
-        println!("Note Up: {}", note);
-    }
-    fn get_key_info(&self, addr: HexAddr, renderer: &mut Renderer) -> Result<HexKey, &'static str> {
-        let (note,_) = self.get_note(addr);
-        // TODO handle these unwraps
-        let surface = self.font.render(note.as_str()).blended(self.colors.line_color).unwrap();
-        let texture = renderer.create_texture_from_surface(&surface).unwrap();
-
-        let color = match note == "C" {
-            true => self.colors.b,
-            false => {
-                match note.contains("#") || note.contains("b") {
-                    true => self.colors.c,
-                    false => self.colors.d,
-                }
-            }
-        };
-        Ok(HexKey {
-            pressed_color: self.colors.f,
-            color: color,
-            label: texture, 
-        })
+    fn get_key_info(&self, addr: HexAddr) -> HexKey {
+        let (note,note_num) = self.get_note(addr);
+        HexKey {
+            label: note, 
+            note: note_num,
+        }
     }
 }
 
@@ -264,6 +218,7 @@ struct HexagonDescription {
 
 fn draw_keyboard(
         renderer:&mut Renderer, 
+        font: &Font,
         colors: &ColorProfile, 
         hexagon: &HexagonDescription, 
         keyboard: &Keyboard,
@@ -275,7 +230,7 @@ fn draw_keyboard(
     for row in 0..rows {
         for col in 0..cols {
             let addr = HexAddr{x:col, y:row};
-            let key_info = try!(keyboard.get_key_info(addr, renderer));
+            let key_info = keyboard.get_key_info(addr);
 
             let is_even = row % 2 == 0;
             let (mut x_offset, y_offset) = match is_even {
@@ -285,9 +240,10 @@ fn draw_keyboard(
             x_offset -= hexagon.width/2;
 
             let (xs, ys) = translate_hexagon(hexagon.x_vec, hexagon.y_vec, x_offset, y_offset);
+            let color = note_to_color(&key_info.label, colors);
             let polygon_color = match pressed_keys.contains(&addr) {
-                true => key_info.pressed_color,
-                false => key_info.color,
+                true => colors.f,
+                false => color,
             };
 
             try!(renderer.filled_polygon(&xs, &ys, polygon_color));
@@ -296,7 +252,8 @@ fn draw_keyboard(
 
             // TODO cache textures for the hex labels
             // if we don't have a keyboard then just print the row and column numbers
-            let mut texture = key_info.label;
+            let surface = font.render(key_info.label.as_str()).blended(colors.line_color).unwrap();
+            let mut texture = renderer.create_texture_from_surface(&surface).unwrap();
 
             let TextureQuery { width, height, .. } = texture.query();
             let label_x = (x_offset as i32 - width as i32/2) as i32;
@@ -311,28 +268,37 @@ fn draw_keyboard(
 struct KeyboardState<'a> {
     active_presses_map : HashMap<i64, HexAddr>,
     hexagon: &'a HexagonDescription,
+    connection_out: MidiOutputConnection,
 }
 
 impl<'a> KeyboardState<'a> {
-   fn on_press(&mut self, oid: i64, x:f32, y:f32, keyboard: &mut Keyboard) {
+    fn start_note(&mut self, addr: HexAddr, keyboard: &mut Keyboard) {
+        let key = keyboard.get_key_info(addr);
+        self.connection_out.send(&[NOTE_ON_MSG, key.note, 70]);
+    }
+    fn end_note(&mut self, addr: HexAddr, keyboard: &mut Keyboard) {
+        let key = keyboard.get_key_info(addr);
+        self.connection_out.send(&[NOTE_OFF_MSG, key.note, 70]);
+    }
+    fn on_press(&mut self, oid: i64, x:f32, y:f32, keyboard: &mut Keyboard) {
         let addr = get_hex_address(x, y, self.hexagon);
         self.active_presses_map.insert(oid, addr);
-        keyboard.on_key_press(addr);
+        self.start_note(addr, keyboard);
     }
     fn on_release(&mut self, oid: i64, keyboard: &mut Keyboard) {
         match self.active_presses_map.remove(&oid) {
-            Some(addr) => keyboard.on_key_release(addr),
+            Some(addr) => self.end_note(addr, keyboard),
             None => (),
         }
     }
     fn on_move(&mut self, oid: i64, x:f32, y:f32, keyboard: &mut Keyboard) {
         let addr = get_hex_address(x, y, self.hexagon);
         match self.active_presses_map.get(&oid) {
-            None => keyboard.on_key_press(addr),
+            None => self.start_note(addr, keyboard),
             Some(&old_addr) => {
-                if addr != old_addr { 
-                    keyboard.on_key_press(addr);
-                    keyboard.on_key_release(old_addr);
+                if addr != old_addr {
+                    self.start_note(addr, keyboard);
+                    self.end_note(old_addr, keyboard);
                 }
             }
         };
@@ -435,7 +401,8 @@ fn main() {
     
     let font_rwop = RWops::from_bytes(TTF_FONT_BYTES).unwrap();
     let keyboard_font = ttf_context.load_font_from_rwops(font_rwop, 20).unwrap();
-    //keyboard_font.set_style(sdl2::ttf::STYLE_BOLD);
+    // be bold
+    // keyboard_font.set_style(sdl2::ttf::STYLE_BOLD);
 
     // Draw a black screen
     renderer.set_draw_color(Color::RGB(0, 0, 0));
@@ -447,16 +414,15 @@ fn main() {
     /////////////////////////
     //// Load the keyboard
     /////////////////////////
-    let mut keyboard = HarmonicKeyboard { 
-        font: keyboard_font, 
+    let mut keyboard = HarmonicKeyboard {
         colors: &colors,
-        connection_out : connection_out,
     };
     
 
     let mut keyboard_state = KeyboardState { 
         hexagon: &hexagon, 
-        active_presses_map: HashMap::new() 
+        active_presses_map: HashMap::new(),
+        connection_out: connection_out,
     };
 
     /////////////////////////
@@ -514,7 +480,7 @@ fn main() {
         if trigger_draw {
             renderer.set_draw_color(colors.line_color);
             renderer.clear();
-            draw_keyboard(&mut renderer, &colors, &hexagon, &keyboard, keyboard_state.get_pressed());
+            draw_keyboard(&mut renderer, &keyboard_font, &colors, &hexagon, &keyboard, keyboard_state.get_pressed());
         }
 
         renderer.present();

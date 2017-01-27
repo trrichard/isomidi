@@ -13,14 +13,11 @@ pub struct HexAddr {
 }
 
 pub struct HexKey {
-    pub pressed_color: Color,
-    pub color: Color,
-    pub label: Texture,
+    pub label: String,
+    pub note: u8,
 }
 
 pub trait Keyboard {
-    fn on_key_press(&mut self, HexAddr);
-    fn on_key_release(&mut self, HexAddr);
-    fn get_key_info(&self, addr: HexAddr, renderer: &mut Renderer) -> Result<HexKey, &'static str>;
+    fn get_key_info(&self, addr: HexAddr) -> HexKey;
 }
 
