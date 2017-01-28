@@ -14,14 +14,12 @@ use sdl2::gfx::primitives::DrawRenderer;
 use sdl2::render::Renderer;
 use std::f32;
 use std::f32::consts::PI;
-use std::path::Path;
-use sdl2::render::Texture;
 use std::collections::HashMap;
 use keyboard::Keyboard;
 use keyboard::HexAddr;
 use keyboard::HexKey;
-use midir::{MidiOutput, Ignore, MidiOutputConnection};
-use std::io::{stdin, stdout, Write};
+use keyboard::HarmonicKeyboard;
+use midir::{MidiOutput, MidiOutputConnection};
 use std::error::Error;
 use sdl2::rwops::RWops;
 
@@ -29,6 +27,16 @@ const INCREMENT_ANGLE:f32 = 2.0*PI/6.0; // 60 degrees in radians
 const MOUSE_OID:i64 = -1;
 const NOTE_ON_MSG: u8 = 0x90;
 const NOTE_OFF_MSG: u8 = 0x80;
+
+/* TODO
+ * Octave Shifing
+ * Multi Key Highlighting
+ * Readme for github
+ * Factor out midi
+ * Better error handling/remove .unwraps
+ * Resizing screen.
+ */
+
 
 fn get_hexagon(x:i16, y:i16, radius:i16) -> ([i16;6], [i16;6]) {
     // TODO this function needs to be broken up into a calculate and translate section, we don't
@@ -122,46 +130,6 @@ fn get_hex_address(xo:f32, yo:f32, hexagon:&HexagonDescription) -> HexAddr {
     HexAddr{x:x, y:y}
 }
 
-
-/// A Keyboard is responsible for labeling it's keys and knowing what to do when a given key is
-/// pressed.
-/// Keyboards must map from a given hexagon address to an action
-struct JammerKeyboard {
-    colors: ColorProfile,
-}
-
-impl Keyboard for JammerKeyboard {
-    fn get_key_info(&self, addr: HexAddr) -> HexKey {
-        let (note,note_num) = self.get_note(addr);
-        HexKey {
-            label: note, 
-            note: note_num,
-        }
-    }
-}
-
-impl JammerKeyboard {
-    fn get_note(&self, addr: HexAddr) -> (String,u8) {
-        let bottom_row =     [ "Bb", "C", "D", "E", "F#", "G#" ];
-        let bottom_row_num =     [ 0, 2, 4, 6, 8, 10 ];
-        let top_row =     [ "F", "G", "A", "B", "C#", "Eb" ];
-        let top_row_num =     [ 7, 9, 11, 12+1, 12+3, 12+5 ];
-        let x = (addr.x % 6) as usize;
-        let keyset = addr.x/6;
-        //println!("keyset {:?}, {}", addr, keyset);
-        // TODO remove the + 12 for this  and make some keys "invalid"
-        let octave = 144 - (12 + addr.y/2 * 12 + 10 - keyset*12) as u8;
-        if addr.y % 2 == 0 {
-            (bottom_row[x].to_string(), octave + bottom_row_num[x]+12)
-        }else{
-            (top_row[x].to_string(), octave + top_row_num[x])
-        }
-    }
-}
-struct HarmonicKeyboard<'a> {
-    colors: &'a ColorProfile,
-}
-
 fn note_to_color(note: &String, colors: &ColorProfile) -> Color {
      match note == "C" {
         true => colors.b,
@@ -171,28 +139,6 @@ fn note_to_color(note: &String, colors: &ColorProfile) -> Color {
                 false => colors.d,
             }
         }
-    }
-}
-
-impl<'a> Keyboard for HarmonicKeyboard<'a> {
-    fn get_key_info(&self, addr: HexAddr) -> HexKey {
-        let (note,note_num) = self.get_note(addr);
-        HexKey {
-            label: note, 
-            note: note_num,
-        }
-    }
-}
-
-impl<'a> HarmonicKeyboard<'a> {
-    fn get_note(&self, addr: HexAddr) -> (String,u8) {
-        let notes = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "G#", "A", "Bb", "B" ];
-        let note_num = 120 + addr.x - 3 * addr.y - addr.y/2;
-        if note_num < 0 {
-            return (" ".to_string(), 0);
-        }
-        let note_label = note_num % 12;
-        return (format!("{}", notes[note_label as usize]), note_num as u8)
     }
 }
 
@@ -224,13 +170,12 @@ fn draw_keyboard(
         keyboard: &Keyboard,
         pressed_keys: Vec<HexAddr>) -> Result<(),String> {
     // TODO math for the number of cols and rows based on window size.
-    let rows = 20;
-    let cols = 10;
+    let rows = 40;
+    let cols = 20;
 
     for row in 0..rows {
         for col in 0..cols {
             let addr = HexAddr{x:col, y:row};
-            let key_info = keyboard.get_key_info(addr);
 
             let is_even = row % 2 == 0;
             let (mut x_offset, y_offset) = match is_even {
@@ -240,7 +185,14 @@ fn draw_keyboard(
             x_offset -= hexagon.width/2;
 
             let (xs, ys) = translate_hexagon(hexagon.x_vec, hexagon.y_vec, x_offset, y_offset);
-            let color = note_to_color(&key_info.label, colors);
+            let key_info = keyboard.get_key_info(addr);
+            let (color, label) = if let Some(key_info) = key_info {
+                (note_to_color(&key_info.label, colors), key_info.label)
+            } else {
+                (colors.line_color, " ".to_string())
+            };
+
+            //let color = note_to_color(&key_info.label, colors);
             let polygon_color = match pressed_keys.contains(&addr) {
                 true => colors.f,
                 false => color,
@@ -252,7 +204,7 @@ fn draw_keyboard(
 
             // TODO cache textures for the hex labels
             // if we don't have a keyboard then just print the row and column numbers
-            let surface = font.render(key_info.label.as_str()).blended(colors.line_color).unwrap();
+            let surface = font.render(label.as_str()).blended(colors.line_color).unwrap();
             let mut texture = renderer.create_texture_from_surface(&surface).unwrap();
 
             let TextureQuery { width, height, .. } = texture.query();
@@ -274,11 +226,21 @@ struct KeyboardState<'a> {
 impl<'a> KeyboardState<'a> {
     fn start_note(&mut self, addr: HexAddr, keyboard: &mut Keyboard) {
         let key = keyboard.get_key_info(addr);
-        self.connection_out.send(&[NOTE_ON_MSG, key.note, 70]);
+        if let Some(x) = key {
+            let res = self.connection_out.send(&[NOTE_ON_MSG, x.note, 70]);
+            if let Err(err) = res {
+                println!("Error Sending Midi Note {}", err);
+            };
+        };
     }
     fn end_note(&mut self, addr: HexAddr, keyboard: &mut Keyboard) {
         let key = keyboard.get_key_info(addr);
-        self.connection_out.send(&[NOTE_OFF_MSG, key.note, 70]);
+        if let Some(x) = key {
+            let res = self.connection_out.send(&[NOTE_OFF_MSG, x.note, 70]);
+            if let Err(err) = res {
+                println!("Error Sending Midi Note {}", err);
+            };
+        };
     }
     fn on_press(&mut self, oid: i64, x:f32, y:f32, keyboard: &mut Keyboard) {
         let addr = get_hex_address(x, y, self.hexagon);
@@ -320,24 +282,13 @@ fn get_midi_connection() -> Result<MidiOutputConnection,Box<Error>> {
     let midi_out = try!(MidiOutput::new("Isomidi"));
     let out_port: u32 = match midi_out.port_count() {
         0 => return Err("no output port found".into()),
-        1 => {
-            println!("Choosing the only available output port: {}", midi_out.port_name(0).unwrap());
-            0
-        },
         _ => {
-            println!("\nAvailable output ports:");
-            for i in 0..midi_out.port_count() {
-                println!("{}: {}", i, midi_out.port_name(i).unwrap());
-            }
-            print!("Please select output port: ");
-            try!(stdout().flush());
-            let mut input = String::new();
-            try!(stdin().read_line(&mut input));
-            try!(input.trim().parse())
+            println!("Choosing the last available output port: {}", midi_out.port_name(0).unwrap());
+            midi_out.port_count() -1
         }
     };
     println!("\nOpening connection");
-    Ok(try!(midi_out.connect(out_port, "midir-test").map_err(|e| e.kind())))
+    Ok(try!(midi_out.connect(out_port, "isomidi").map_err(|e| e.kind())))
 }
 
 fn main() {
@@ -357,12 +308,11 @@ fn main() {
 
     let radius = 75;
 
-    let font_path = Path::new("/home/trichard/Documents/Software/Blue/personal/isomidi/FantasqueSansMono-Regular.ttf");
     let screen_height = 1200;
     let screen_width = 1800;
-    let TTF_FONT_BYTES = include_bytes!("FantasqueSansMono-Regular.ttf");
+    let ttf_font_bytes = include_bytes!("FantasqueSansMono-Regular.ttf");
     
-    let mut connection_out = get_midi_connection().unwrap();
+    let connection_out = get_midi_connection().unwrap();
 
 
     /////////////////////////
@@ -399,7 +349,7 @@ fn main() {
     
     let mut renderer = window.renderer().build().unwrap();
     
-    let font_rwop = RWops::from_bytes(TTF_FONT_BYTES).unwrap();
+    let font_rwop = RWops::from_bytes(ttf_font_bytes).unwrap();
     let keyboard_font = ttf_context.load_font_from_rwops(font_rwop, 20).unwrap();
     // be bold
     // keyboard_font.set_style(sdl2::ttf::STYLE_BOLD);
@@ -414,9 +364,7 @@ fn main() {
     /////////////////////////
     //// Load the keyboard
     /////////////////////////
-    let mut keyboard = HarmonicKeyboard {
-        colors: &colors,
-    };
+    let mut keyboard = HarmonicKeyboard {};
     
 
     let mut keyboard_state = KeyboardState { 
@@ -480,7 +428,7 @@ fn main() {
         if trigger_draw {
             renderer.set_draw_color(colors.line_color);
             renderer.clear();
-            draw_keyboard(&mut renderer, &keyboard_font, &colors, &hexagon, &keyboard, keyboard_state.get_pressed());
+            draw_keyboard(&mut renderer, &keyboard_font, &colors, &hexagon, &keyboard, keyboard_state.get_pressed()).unwrap();
         }
 
         renderer.present();
