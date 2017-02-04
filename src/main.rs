@@ -19,6 +19,7 @@ use keyboard::Keyboard;
 use keyboard::HexAddr;
 use keyboard::HexKey;
 use keyboard::HarmonicKeyboard;
+use keyboard::JammerKeyboard;
 use midir::{MidiOutput, MidiOutputConnection};
 use std::error::Error;
 use sdl2::rwops::RWops;
@@ -30,11 +31,14 @@ const NOTE_OFF_MSG: u8 = 0x80;
 
 /* TODO
  * Octave Shifing
+ * Keyboard Rotation 
  * Multi Key Highlighting
  * Readme for github
  * Factor out midi
  * Better error handling/remove .unwraps
  * Resizing screen.
+ * Add Guitar Layout
+ *
  */
 
 
@@ -130,25 +134,63 @@ fn get_hex_address(xo:f32, yo:f32, hexagon:&HexagonDescription) -> HexAddr {
     HexAddr{x:x, y:y}
 }
 
-fn note_to_color(note: &String, colors: &ColorProfile) -> Color {
-     match note == "C" {
-        true => colors.b,
-        false => {
-            match note.contains("#") || note.contains("b") {
-                true => colors.c,
-                false => colors.d,
-            }
-        }
-    }
+fn note_to_color(note: u8, config: &Config) -> Color {
+     // 0 for root, 1 for in key, 2 for sharp or flat
+     let colors = &config.colors;
+     let key = config.root_note;
+
+     //C    C#  D   D#  E   F   F#  G   G#  A   A#  B
+     let major_color_mask = [ 
+         colors.root, // c
+         colors.out_of_key, // c#
+         colors.in_key_and_penta, // d
+         colors.out_of_key, // d#
+         colors.in_key_and_penta, // e
+         colors.in_key, // f
+         colors.out_of_key, // f#
+         colors.in_key_and_penta, // g
+         colors.out_of_key, // g#
+         colors.in_key_and_penta, // a
+         colors.out_of_key, // a#
+         colors.in_key  // b
+     ];
+     // computed c relative
+     let minor_color_mask = [ 
+         colors.in_key_and_penta, // c
+         colors.out_of_key, // c#
+         colors.in_key_and_penta, // d
+         colors.out_of_key, // d#
+         colors.in_key_and_penta, // e
+         colors.in_key, // f
+         colors.out_of_key, // f#
+         colors.in_key_and_penta, // g
+         colors.out_of_key, // g#
+         colors.root, // a
+         colors.out_of_key, // a#
+         colors.in_key  // b
+     ];
+     let index = (note + key ) % 12;
+     if config.is_major {
+         major_color_mask[index as usize]
+     } else {
+         minor_color_mask[index as usize]
+     }
+}
+
+struct Config {
+    colors: ColorProfile,
+    root_note: u8, // 0 for c
+    is_major: bool, 
+    hexagon: HexagonDescription,
 }
 
 struct ColorProfile {
     line_color: Color,
-    b: Color,
-    c: Color,
-    d: Color,
-    e: Color,
-    f: Color,
+    root: Color,
+    out_of_key: Color,
+    in_key_and_penta: Color,
+    in_key: Color,
+    white: Color,
 }
 
 #[derive(Debug)]
@@ -165,8 +207,7 @@ struct HexagonDescription {
 fn draw_keyboard(
         renderer:&mut Renderer, 
         font: &Font,
-        colors: &ColorProfile, 
-        hexagon: &HexagonDescription, 
+        config: &Config,
         keyboard: &Keyboard,
         pressed_keys: Vec<HexAddr>) -> Result<(),String> {
     // TODO math for the number of cols and rows based on window size.
@@ -179,32 +220,30 @@ fn draw_keyboard(
 
             let is_even = row % 2 == 0;
             let (mut x_offset, y_offset) = match is_even {
-                true => ((hexagon.width + hexagon.radius) * col, row * hexagon.half_height),
-                false => ((hexagon.width + hexagon.radius) * col + hexagon.radius + hexagon.radius/2, row * hexagon.half_height),
+                true => ((config.hexagon.width + config.hexagon.radius) * col, row * config.hexagon.half_height),
+                false => ((config.hexagon.width + config.hexagon.radius) * col + config.hexagon.radius + config.hexagon.radius/2, row * config.hexagon.half_height),
             };
-            x_offset -= hexagon.width/2;
+            x_offset -= config.hexagon.width/2;
 
-            let (xs, ys) = translate_hexagon(hexagon.x_vec, hexagon.y_vec, x_offset, y_offset);
+            let (xs, ys) = translate_hexagon(config.hexagon.x_vec, config.hexagon.y_vec, x_offset, y_offset);
             let key_info = keyboard.get_key_info(addr);
             let (color, label) = if let Some(key_info) = key_info {
-                (note_to_color(&key_info.label, colors), key_info.label)
+                (note_to_color(key_info.note, config), key_info.label)
             } else {
-                (colors.line_color, " ".to_string())
+                (config.colors.line_color, " ".to_string())
             };
 
-            //let color = note_to_color(&key_info.label, colors);
             let polygon_color = match pressed_keys.contains(&addr) {
-                true => colors.f,
+                true => config.colors.white,
                 false => color,
             };
 
             try!(renderer.filled_polygon(&xs, &ys, polygon_color));
-            //println!("{}x{} {:?} {:?}", row, col, xs.to_vec(), ys);
-            try!(renderer.polygon(&xs, &ys, colors.line_color));
+            try!(renderer.polygon(&xs, &ys, config.colors.line_color));
 
             // TODO cache textures for the hex labels
             // if we don't have a keyboard then just print the row and column numbers
-            let surface = font.render(label.as_str()).blended(colors.line_color).unwrap();
+            let surface = font.render(label.as_str()).blended(config.colors.line_color).unwrap();
             let mut texture = renderer.create_texture_from_surface(&surface).unwrap();
 
             let TextureQuery { width, height, .. } = texture.query();
@@ -219,7 +258,7 @@ fn draw_keyboard(
 
 struct KeyboardState<'a> {
     active_presses_map : HashMap<i64, HexAddr>,
-    hexagon: &'a HexagonDescription,
+    config: &'a Config,
     connection_out: MidiOutputConnection,
 }
 
@@ -243,7 +282,7 @@ impl<'a> KeyboardState<'a> {
         };
     }
     fn on_press(&mut self, oid: i64, x:f32, y:f32, keyboard: &mut Keyboard) {
-        let addr = get_hex_address(x, y, self.hexagon);
+        let addr = get_hex_address(x, y, &self.config.hexagon);
         self.active_presses_map.insert(oid, addr);
         self.start_note(addr, keyboard);
     }
@@ -254,7 +293,7 @@ impl<'a> KeyboardState<'a> {
         }
     }
     fn on_move(&mut self, oid: i64, x:f32, y:f32, keyboard: &mut Keyboard) {
-        let addr = get_hex_address(x, y, self.hexagon);
+        let addr = get_hex_address(x, y, &self.config.hexagon);
         match self.active_presses_map.get(&oid) {
             None => self.start_note(addr, keyboard),
             Some(&old_addr) => {
@@ -299,11 +338,11 @@ fn main() {
     // https://coolors.co/f4d06f-ff8811-9dd9d2-fff8f0-392f5a
     let colors = ColorProfile {
         line_color: Color::RGB(0, 0, 0),
-        b : Color::RGB(0xf4,0xD0,0x6F),
-        c : Color::RGB(0xff,0x88,0x11),
-        d : Color::RGB(0x9D,0x9D,0xD2),
-        e : Color::RGB(0xFF,0xF8,0xF0),
-        f : Color::RGB(0x39,0x2F,0x5A),
+        root : Color::RGB(0xf4,0xD0,0x6F), // root
+        out_of_key : Color::RGB(0xff,0x88,0x11), // sharp/flat
+        in_key_and_penta : Color::RGB(0x9D,0x9D,0xD2), // in key & pentatonic
+        in_key : Color::RGB(0xba, 0xba, 0xdf), // in key
+        white : Color::RGB(0x39,0x2F,0x5A),
     };
 
     let radius = 75;
@@ -332,6 +371,13 @@ fn main() {
     };
 
     println!("hexagon: {:?}", hexagon);
+
+    let config = Config {
+        colors: colors,
+        root_note: 0, // C
+        is_major: true,
+        hexagon: hexagon,
+    };
 
     /////////////////////////
     //// SDL Setup
@@ -364,11 +410,12 @@ fn main() {
     /////////////////////////
     //// Load the keyboard
     /////////////////////////
+    //let mut keyboard = JammerKeyboard {};
     let mut keyboard = HarmonicKeyboard {};
     
 
     let mut keyboard_state = KeyboardState { 
-        hexagon: &hexagon, 
+        config: &config, 
         active_presses_map: HashMap::new(),
         connection_out: connection_out,
     };
@@ -426,9 +473,9 @@ fn main() {
             }
         }
         if trigger_draw {
-            renderer.set_draw_color(colors.line_color);
+            renderer.set_draw_color(config.colors.line_color);
             renderer.clear();
-            draw_keyboard(&mut renderer, &keyboard_font, &colors, &hexagon, &keyboard, keyboard_state.get_pressed()).unwrap();
+            draw_keyboard(&mut renderer, &keyboard_font, &config, &keyboard, keyboard_state.get_pressed()).unwrap();
         }
 
         renderer.present();

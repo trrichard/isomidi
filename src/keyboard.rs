@@ -9,6 +9,7 @@ pub struct HexAddr {
     pub y : i16,
 }
 
+#[derive(Debug,PartialEq,Eq)]
 pub struct HexKey {
     pub label: String,
     pub note: u8,
@@ -27,6 +28,7 @@ pub struct JammerKeyboard {
 
 impl Keyboard for JammerKeyboard {
     fn get_key_info(&self, addr: HexAddr) -> Option<HexKey> {
+        //println!("{:?}", addr);
         let bottom_row =     [ "Bb", "C", "D", "E", "F#", "G#" ];
         let bottom_row_num =     [ 0, 2, 4, 6, 8, 10 ];
         let top_row =     [ "F", "G", "A", "B", "C#", "Eb" ];
@@ -35,14 +37,18 @@ impl Keyboard for JammerKeyboard {
         let keyset = addr.x/6;
         //println!("keyset {:?}, {}", addr, keyset);
         // TODO remove the + 12 for this  and make some keys "invalid"
-        let octave = 144 - (12 + addr.y/2 * 12 + 10 - keyset*12) as u8;
+        
+        let octave = 144 - (12 + addr.y/2 * 12 + 10 - keyset*12) as i32;
+        if octave < 0  || octave > 144 {
+            return None
+        }
         let (note, note_num) = match addr.y % 2 == 0 {
             true => (bottom_row[x].to_string(), octave + bottom_row_num[x]+12),
             false => (top_row[x].to_string(), octave + top_row_num[x]),
         };
         Some(HexKey {
             label: note, 
-            note: note_num,
+            note: note_num as u8,
         })
     }
 }
