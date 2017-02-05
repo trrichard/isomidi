@@ -9,6 +9,7 @@ use std::time::{Instant,Duration};
 use sdl2::pixels::Color;
 use sdl2::ttf::Font;
 use sdl2::event::Event;
+use sdl2::event::WindowEvent;
 use sdl2::keyboard::Keycode;
 use sdl2::gfx::primitives::DrawRenderer;
 use sdl2::render::Renderer;
@@ -36,9 +37,10 @@ const NOTE_OFF_MSG: u8 = 0x80;
  * Readme for github
  * Factor out midi
  * Better error handling/remove .unwraps
- * Resizing screen.
  * Add Guitar Layout
- *
+ * Consider changing draw_keyboard so that it draws only the key changes and not the whole board
+ *      every time.
+ * Correct velocity controls?
  */
 
 
@@ -182,6 +184,11 @@ struct Config {
     root_note: u8, // 0 for c
     is_major: bool, 
     hexagon: HexagonDescription,
+    width: u32,
+    height: u32,
+    rows: i16,
+    cols: i16,
+    velocity: u8,
 }
 
 struct ColorProfile {
@@ -210,9 +217,8 @@ fn draw_keyboard(
         config: &Config,
         keyboard: &Keyboard,
         pressed_keys: Vec<HexAddr>) -> Result<(),String> {
-    // TODO math for the number of cols and rows based on window size.
-    let rows = 40;
-    let cols = 20;
+    let rows = config.rows;
+    let cols = config.cols;
 
     for row in 0..rows {
         for col in 0..cols {
@@ -259,14 +265,14 @@ fn draw_keyboard(
 struct KeyboardState<'a> {
     active_presses_map : HashMap<i64, HexAddr>,
     config: &'a Config,
-    connection_out: MidiOutputConnection,
+    connection_out: &'a mut MidiOutputConnection,
 }
 
 impl<'a> KeyboardState<'a> {
     fn start_note(&mut self, addr: HexAddr, keyboard: &mut Keyboard) {
         let key = keyboard.get_key_info(addr);
         if let Some(x) = key {
-            let res = self.connection_out.send(&[NOTE_ON_MSG, x.note, 70]);
+            let res = self.connection_out.send(&[NOTE_ON_MSG, x.note, self.config.velocity]);
             if let Err(err) = res {
                 println!("Error Sending Midi Note {}", err);
             };
@@ -275,7 +281,7 @@ impl<'a> KeyboardState<'a> {
     fn end_note(&mut self, addr: HexAddr, keyboard: &mut Keyboard) {
         let key = keyboard.get_key_info(addr);
         if let Some(x) = key {
-            let res = self.connection_out.send(&[NOTE_OFF_MSG, x.note, 70]);
+            let res = self.connection_out.send(&[NOTE_OFF_MSG, x.note, self.config.velocity]);
             if let Err(err) = res {
                 println!("Error Sending Midi Note {}", err);
             };
@@ -336,14 +342,6 @@ fn main() {
     /////////////////////////
     
     // https://coolors.co/f4d06f-ff8811-9dd9d2-fff8f0-392f5a
-    let colors = ColorProfile {
-        line_color: Color::RGB(0, 0, 0),
-        root : Color::RGB(0xf4,0xD0,0x6F), // root
-        out_of_key : Color::RGB(0xff,0x88,0x11), // sharp/flat
-        in_key_and_penta : Color::RGB(0x9D,0x9D,0xD2), // in key & pentatonic
-        in_key : Color::RGB(0xba, 0xba, 0xdf), // in key
-        white : Color::RGB(0x39,0x2F,0x5A),
-    };
 
     let radius = 75;
 
@@ -351,33 +349,8 @@ fn main() {
     let screen_width = 1800;
     let ttf_font_bytes = include_bytes!("FantasqueSansMono-Regular.ttf");
     
-    let connection_out = get_midi_connection().unwrap();
+    let mut connection_out = get_midi_connection().unwrap();
 
-
-    /////////////////////////
-    ///// Derived Constants
-    /////////////////////////
-
-
-    let (hexagon_x, hexagon_y) = get_hexagon(0,0,radius);
-    let half_height = ((INCREMENT_ANGLE).sin() * radius as f32).round() as i16;
-    let hexagon = HexagonDescription {
-        width : (radius * 2 ) as i16,
-        half_height: half_height,
-        height :  half_height * 2,
-        radius: radius,
-        x_vec: hexagon_x,
-        y_vec: hexagon_y,
-    };
-
-    println!("hexagon: {:?}", hexagon);
-
-    let config = Config {
-        colors: colors,
-        root_note: 0, // C
-        is_major: true,
-        hexagon: hexagon,
-    };
 
     /////////////////////////
     //// SDL Setup
@@ -390,6 +363,7 @@ fn main() {
     let window = video_subsystem.window("Isomidi", screen_width, screen_height)
         .position_centered()
         .opengl()
+        .resizable()
         .build()
         .unwrap();
     
@@ -411,81 +385,133 @@ fn main() {
     //// Load the keyboard
     /////////////////////////
     //let mut keyboard = JammerKeyboard {};
-    let mut keyboard = HarmonicKeyboard {};
-    
+    'config: loop {
+        /////////////////////////
+        ///// Derived Constants
+        /////////////////////////
+        let colors = ColorProfile {
+            line_color: Color::RGB(0, 0, 0),
+            root : Color::RGB(0xf4,0xD0,0x6F), // root
+            out_of_key : Color::RGB(0xff,0x88,0x11), // sharp/flat
+            in_key_and_penta : Color::RGB(0x9D,0x9D,0xD2), // in key & pentatonic
+            in_key : Color::RGB(0xba, 0xba, 0xdf), // in key
+            white : Color::RGB(0x39,0x2F,0x5A),
+        };
 
-    let mut keyboard_state = KeyboardState { 
-        config: &config, 
-        active_presses_map: HashMap::new(),
-        connection_out: connection_out,
-    };
+        let (hexagon_x, hexagon_y) = get_hexagon(0,0,radius);
+        let half_height = ((INCREMENT_ANGLE).sin() * radius as f32).round() as i16;
+        let hexagon = HexagonDescription {
+            width : (radius * 2 ) as i16,
+            half_height: half_height,
+            height :  half_height * 2,
+            radius: radius,
+            x_vec: hexagon_x,
+            y_vec: hexagon_y,
+        };
+        println!("hexagon: {:?}", hexagon);
 
-    /////////////////////////
-    //// Main loop
-    /////////////////////////
-    let mut frame_count = 0;
-    let mut last_time = Instant::now();
-    let mut first_run = true;
-    'running: loop {
-        // TODO sleep till next event?
-        let sleep_time = Duration::from_millis(10);
-        thread::sleep(sleep_time);
+        let size = {
+            let mut window = renderer.window_mut().unwrap();
+            window.size()
+        };
+        let rows = (size.1 as i16/hexagon.height as i16) * 2 + 3;
+        let cols = (size.0 as i16/(hexagon.width + hexagon.radius)) as i16 + 2;
 
-        // TODO: How are we going to do multi finger tracking and mouse tracking?
-        // list of active fingerids / mouse id plus the current hex addr.
-        // on hex addr change fire on_key_press
-        let mut trigger_draw = false;
-        if first_run { trigger_draw = true; first_run = false }
-        for event in event_pump.poll_iter() {
-            match event {
-                Event::Quit {..} | Event::KeyDown { keycode: Some(Keycode::Escape), .. } => {
-                    println!("Exiting");
-                    break 'running
-                },
-                Event::MouseButtonDown {x, y, ..} => {
-                    keyboard_state.on_press(MOUSE_OID, x as f32, y as f32, &mut keyboard);
-                    trigger_draw = true;
-                },
-                Event::MouseButtonUp {..} => {
-                    keyboard_state.on_release(MOUSE_OID, &mut keyboard);
-                    trigger_draw = true;
-                },
-                Event::MouseMotion {x, y, mousestate, ..} => {
-                    // track only if left mouse button is down
-                    if mousestate.left() {
-                        keyboard_state.on_move(MOUSE_OID, x as f32, y as f32, &mut keyboard);
+        let mut config = Config {
+            colors: colors,
+            root_note: 0, // C
+            is_major: true,
+            hexagon: hexagon,
+            width: size.0,
+            height: size.1,
+            rows: rows,
+            cols: cols,
+            velocity: 70,
+        };
+        let mut keyboard = HarmonicKeyboard {};
+        
+        let mut keyboard_state = KeyboardState { 
+            config: &config, 
+            active_presses_map: HashMap::new(),
+            connection_out: &mut connection_out,
+        };
+
+        /////////////////////////
+        //// Main loop
+        /////////////////////////
+        let mut frame_count = 0;
+        let mut last_time = Instant::now();
+        let mut first_run = true;
+        'render: loop {
+            // TODO sleep till next event?
+            let sleep_time = Duration::from_millis(10);
+            thread::sleep(sleep_time);
+
+            // TODO: How are we going to do multi finger tracking and mouse tracking?
+            // list of active fingerids / mouse id plus the current hex addr.
+            // on hex addr change fire on_key_press
+            let mut trigger_draw = false;
+            if first_run { trigger_draw = true; first_run = false }
+            for event in event_pump.poll_iter() {
+                match event {
+                    Event::Quit {..} | Event::KeyDown { keycode: Some(Keycode::Escape), .. } => {
+                        println!("Exiting");
+                        break 'config
+                    },
+                    Event::MouseButtonDown {x, y, ..} => {
+                        keyboard_state.on_press(MOUSE_OID, x as f32, y as f32, &mut keyboard);
                         trigger_draw = true;
-                    }
-                },
-                Event::FingerDown {x, y, finger_id, ..} => {
-                    keyboard_state.on_press(finger_id, x as f32, y as f32, &mut keyboard);
-                    trigger_draw = true;
-                },
-                Event::FingerMotion {x, y, finger_id, ..} => {
-                    keyboard_state.on_move(finger_id, x as f32, y as f32, &mut keyboard);
-                    trigger_draw = true;
-                },
-                Event::FingerUp {finger_id, ..} => {
-                    keyboard_state.on_release(finger_id, &mut keyboard);
-                    trigger_draw = true;
-                },
-                _ => {}
+                    },
+                    Event::MouseButtonUp {..} => {
+                        keyboard_state.on_release(MOUSE_OID, &mut keyboard);
+                        trigger_draw = true;
+                    },
+                    Event::MouseMotion {x, y, mousestate, ..} => {
+                        // track only if left mouse button is down
+                        if mousestate.left() {
+                            keyboard_state.on_move(MOUSE_OID, x as f32, y as f32, &mut keyboard);
+                            trigger_draw = true;
+                        }
+                    },
+                    Event::FingerDown {x, y, finger_id, ..} => {
+                        keyboard_state.on_press(finger_id, x as f32, y as f32, &mut keyboard);
+                        trigger_draw = true;
+                    },
+                    Event::FingerMotion {x, y, finger_id, ..} => {
+                        keyboard_state.on_move(finger_id, x as f32, y as f32, &mut keyboard);
+                        trigger_draw = true;
+                    },
+                    Event::FingerUp {finger_id, ..} => {
+                        keyboard_state.on_release(finger_id, &mut keyboard);
+                        trigger_draw = true;
+                    },
+                    Event::Window {win_event, ..} => {
+                        match win_event {
+                            WindowEvent::SizeChanged (width, height) => {
+                                // breaks out of the render loop and reconfigures the application
+                                break 'render
+                            }
+                            _ => {}
+                        }
+                    },
+                    _ => {}
+                }
             }
-        }
-        if trigger_draw {
-            renderer.set_draw_color(config.colors.line_color);
-            renderer.clear();
-            draw_keyboard(&mut renderer, &keyboard_font, &config, &keyboard, keyboard_state.get_pressed()).unwrap();
-        }
+            if trigger_draw {
+                renderer.set_draw_color(config.colors.line_color);
+                renderer.clear();
+                draw_keyboard(&mut renderer, &keyboard_font, &config, &keyboard, keyboard_state.get_pressed()).unwrap();
+            }
 
-        renderer.present();
+            renderer.present();
 
-        // TODO render a stats section in app
-        frame_count += 1;
-        if last_time.elapsed() > Duration::from_secs(1) {
-            println!("fps {}", frame_count);
-            frame_count = 0;
-            last_time = Instant::now();
+            // TODO render a stats section in app
+            frame_count += 1;
+            if last_time.elapsed() > Duration::from_secs(1) {
+                println!("fps {}", frame_count);
+                frame_count = 0;
+                last_time = Instant::now();
+            }
         }
     }
 }
